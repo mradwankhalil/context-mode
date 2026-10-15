@@ -167,8 +167,11 @@ await runHook(async () => {
   const isSubagentContext = input.agent_id != null || input.agent_type != null;
 
   // ─── Route and format response ───
-  const decision = routePreToolUse(tool, toolInput, projectDir, "claude-code", getSessionId(input), {
-    mcpToolsAvailable: !isSubagentContext,
+  // Compatibility hosts retain the Claude response envelope, but their tool
+  // identifiers and child-session availability belong to the actual host.
+  const platform = input.hook_host === "opencode" ? "opencode" : "claude-code";
+  const decision = routePreToolUse(tool, toolInput, projectDir, platform, getSessionId(input), {
+    mcpToolsAvailable: platform === "opencode" || !isSubagentContext,
   });
   const response = formatDecision("claude-code", decision);
 
