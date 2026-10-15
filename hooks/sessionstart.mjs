@@ -44,7 +44,9 @@ await runHook(async () => {
   const { fileURLToPath } = await import("node:url");
   const { readFileSync, unlinkSync, readdirSync, rmSync, lstatSync, realpathSync, symlinkSync } = await import("node:fs");
 
-  const detectedPlatform = detectPlatformFromEnv();
+  const raw = await readStdin();
+  const input = parseStdin(raw);
+  const detectedPlatform = input.hook_host === "opencode" ? "opencode" : detectPlatformFromEnv();
   const toolNamer = createToolNamer(detectedPlatform);
   const ROUTING_BLOCK = createRoutingBlock(toolNamer);
 
@@ -184,8 +186,6 @@ await runHook(async () => {
   } catch { /* security probe is best-effort — never block session start */ }
 
   try {
-    const raw = await readStdin();
-    const input = parseStdin(raw);
     const source = input.source ?? "startup";
 
     if (source === "compact") {
