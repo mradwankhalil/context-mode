@@ -1,0 +1,12 @@
+{
+  "id": "opencode-hook-host",
+  "commit": "640e7fecee2d6a410a6bde31de46ec5980076f73",
+  "patch": "opencode-hook-host.patch",
+  "upstreamBranch": "https://github.com/mradwankhalil/context-mode/tree/fix/opencode-hook-host-upstream",
+  "upstreamPR": null,
+  "upstreamBlocker": "CreatePullRequest denied by upstream; upstream issues disabled",
+  "files": ["hooks/pretooluse.mjs", "hooks/sessionstart.mjs"],
+  "marker": "input.hook_host === \"opencode\"",
+  "pair": "OMO v2 fix 41-v2-tool-host-namespaces",
+  "promotion": "Never overwrite changed upstream hooks. After updates, verify the marker in both installed hooks. If missing, apply this patch to an isolated checkout, rerun host subprocess tests, regenerate hash-locked payload, and promote during a closed OpenChamber window. Unknown versions fail closed until restaged."
+}

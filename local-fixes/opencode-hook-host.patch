@@ -1,0 +1,56 @@
+From 640e7fecee2d6a410a6bde31de46ec5980076f73 Mon Sep 17 00:00:00 2001
+From: "Mohamed R. Khalil" <m.radwan.khalil@gmail.com>
+Date: Thu, 15 Oct 2026 23:32:23 +0300
+Subject: [PATCH] fix(hooks): honor explicit OpenCode host in Claude-compatible
+ guidance
+
+---
+ hooks/pretooluse.mjs   | 7 +++++--
+ hooks/sessionstart.mjs | 6 +++---
+ 2 files changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/hooks/pretooluse.mjs b/hooks/pretooluse.mjs
+index 51d307a..7d6a8bf 100755
+--- a/hooks/pretooluse.mjs
++++ b/hooks/pretooluse.mjs
+@@ -167,8 +167,11 @@ await runHook(async () => {
+   const isSubagentContext = input.agent_id != null || input.agent_type != null;
+ 
+   // ─── Route and format response ───
+-  const decision = routePreToolUse(tool, toolInput, projectDir, "claude-code", getSessionId(input), {
+-    mcpToolsAvailable: !isSubagentContext,
++  // Compatibility hosts retain the Claude response envelope, but their tool
++  // identifiers and child-session availability belong to the actual host.
++  const platform = input.hook_host === "opencode" ? "opencode" : "claude-code";
++  const decision = routePreToolUse(tool, toolInput, projectDir, platform, getSessionId(input), {
++    mcpToolsAvailable: platform === "opencode" || !isSubagentContext,
+   });
+   const response = formatDecision("claude-code", decision);
+ 
+diff --git a/hooks/sessionstart.mjs b/hooks/sessionstart.mjs
+index 8083ce3..085a2ce 100755
+--- a/hooks/sessionstart.mjs
++++ b/hooks/sessionstart.mjs
+@@ -44,7 +44,9 @@ await runHook(async () => {
+   const { fileURLToPath } = await import("node:url");
+   const { readFileSync, unlinkSync, readdirSync, rmSync, lstatSync, realpathSync, symlinkSync } = await import("node:fs");
+ 
+-  const detectedPlatform = detectPlatformFromEnv();
++  const raw = await readStdin();
++  const input = parseStdin(raw);
++  const detectedPlatform = input.hook_host === "opencode" ? "opencode" : detectPlatformFromEnv();
+   const toolNamer = createToolNamer(detectedPlatform);
+   const ROUTING_BLOCK = createRoutingBlock(toolNamer);
+ 
+@@ -184,8 +186,6 @@ await runHook(async () => {
+   } catch { /* security probe is best-effort — never block session start */ }
+ 
+   try {
+-    const raw = await readStdin();
+-    const input = parseStdin(raw);
+     const source = input.source ?? "startup";
+ 
+     if (source === "compact") {
+-- 
+2.55.0.windows.5
+
