@@ -77,6 +77,7 @@ export async function ensureDeps() {
           stdio: "pipe",
           timeout: 120000,
           shell: true,
+          windowsHide: true,
         });
       } catch { /* best effort — hook degrades gracefully without DB */ }
     } else if (!existsSync(resolve(pkgDir, ...NATIVE_BINARIES[pkg]))) {
@@ -105,6 +106,7 @@ function probeNativeInChildProcess(pluginRoot) {
       cwd: pluginRoot,
       stdio: "pipe",
       timeout: 10000,
+      windowsHide: true,
     });
     return true;
   } catch {
@@ -195,6 +197,7 @@ export function ensureNativeCompat(pluginRoot) {
         stdio: "pipe",
         timeout: 60000,
         shell: true,
+        windowsHide: true,
       });
       codesignBinary(binaryPath);
       if (existsSync(binaryPath)) {
@@ -214,6 +217,7 @@ export function ensureNativeCompat(pluginRoot) {
         stdio: "pipe",
         timeout: 60000,
         shell: true,
+        windowsHide: true,
       });
       codesignBinary(binaryPath);
       if (existsSync(binaryPath) && probeNativeInChildProcess(pluginRoot)) {
@@ -242,6 +246,7 @@ export function codesignBinary(binaryPath) {
       execSync(`codesign --sign - --force "${binaryPath}"`, {
         stdio: "pipe",
         timeout: 10000,
+        windowsHide: true,
       });
     } catch { /* codesign unavailable — continue without signing */ }
   }

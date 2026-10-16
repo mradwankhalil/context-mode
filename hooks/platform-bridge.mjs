@@ -192,6 +192,7 @@ function readGitRemote(gitTop) {
       encoding: "utf8",
       timeout: 500,
       stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
     }).trim();
     return url || null;
   } catch {

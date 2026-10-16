@@ -197,7 +197,7 @@ function cleanupTmpDir(tmpDir: string): void {
 function killTree(proc: ReturnType<typeof spawn>): void {
   if (isWin && proc.pid) {
     try {
-      execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: "pipe" });
+      execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: "pipe", windowsHide: true });
     } catch { /* already dead */ }
   } else if (proc.pid) {
     try {
