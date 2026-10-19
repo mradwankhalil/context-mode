@@ -20,6 +20,13 @@ vi.mock("node:child_process", () => ({
     }, 1);
     return { on() {} };
   },
+  exec: (command: string, opts: any, cb: Function) => {
+    probes.calls.push(command);
+    expect(opts.windowsHide).toBe(true);
+    expect(opts.timeout).toBeGreaterThan(0);
+    setTimeout(() => cb(null, "Python 3.12", ""), 1);
+    return { on() {} };
+  },
 }));
 vi.mock("node:fs/promises", () => ({ access: async (p: string) => {
   if (!probes.files.has(p)) throw new Error("ENOENT");
@@ -63,7 +70,8 @@ test("Windows rejects WSL and Store stubs, preserves Git Bash and stale execPath
   expect(result.shell).toBe("C:\\Git\\bin\\bash.exe");
   expect(result.python).toBe("python");
   expect(result.javascript).toBe("node");
-  expect(probes.calls.some(c => c.includes("python3 --version"))).toBe(false);
+  expect(probes.calls.some(c => /python3"? --version/.test(c))).toBe(false);
+  expect(probes.calls).toContain('"python" --version');
 });
 
 test("SHELL and Bun fallback inputs invalidate the cache; non-shell override is refused", async () => {

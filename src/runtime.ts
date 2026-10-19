@@ -1,4 +1,4 @@
-import { execFile, execFileSync, execSync } from "node:child_process";
+import { exec, execFile, execFileSync, execSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { JS_RUNTIMES } from "./adapters/types.js";
@@ -462,8 +462,12 @@ async function discoverRuntimesAsync(
       const hits = (await locate(cmd)).filter(p => !win || !/\\Microsoft\\WindowsApps\\/i.test(p));
       if (!hits.length) continue;
       try {
-        // Probe the real hit, never launch a Store stub ahead of it on PATH.
-        await run(win ? hits[0] : cmd, ["--version"], win ? 5000 : 1500);
+        // Same contract as runnableExists: on Windows let cmd.exe resolve the
+        // name (PATHEXT, .bat shims, PATH order) exactly as execution will.
+        await (win
+          ? new Promise<void>((resolve, reject) => exec(`"${cmd}" --version`,
+            { env, cwd, timeout: 5000, windowsHide: true }, error => error ? reject(error) : resolve()))
+          : run(cmd, ["--version"], 1500));
         return cmd;
       } catch { /* not runnable — try the next Python launcher */ }
     }
