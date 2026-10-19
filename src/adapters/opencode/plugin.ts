@@ -25,7 +25,7 @@ import { dirname, resolve, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
 
-import { resolveSessionDbPath, SessionDB } from "../../session/db.js";
+import { resolveSessionDbPathAsync, SessionDB } from "../../session/db.js";
 import { extractEvents, extractUserEvents, parseOpencodeUsage, buildAgentUsageEvent } from "../../session/extract.js";
 import type { HookInput } from "../../session/extract.js";
 import { buildResumeSnapshot } from "../../session/snapshot.js";
@@ -301,7 +301,7 @@ async function createContextModePlugin(ctx: PluginContext) {
   // the sessions DIR (per-platform), the helper owns the per-project FILE
   // (case-fold + worktree-suffix + one-shot legacy migration).
   const db = new SessionDB({
-    dbPath: resolveSessionDbPath({ projectDir, sessionsDir: adapter.getSessionDir() }),
+    dbPath: await resolveSessionDbPathAsync({ projectDir, sessionsDir: adapter.getSessionDir() }),
   });
 
   // Clean up old sessions on startup (no SessionStart hook to do this).

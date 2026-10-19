@@ -11,7 +11,8 @@ import type { PreparedStatement } from "../db-base.js";
 import type { SessionEvent } from "../types.js";
 import type { ProjectAttribution } from "./project-attribution.js";
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { realpath } from "node:fs/promises";
 import { accessSync, constants, existsSync, mkdirSync, realpathSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -306,6 +307,7 @@ function pathFromStorageError(err: unknown): string | null {
 // Key by projectDir so callers can pass the actual workspace even when the
 // MCP server has chdir'd into the installed package directory.
 let _wtCache: { projectDir: string; envSuffix: string | undefined; suffix: string } | undefined;
+const pendingWorktreeSuffixes = new Map<string, Promise<string>>();
 
 export function normalizeWorktreePath(path: string): string {
   const normalized = path.replace(/\\/g, "/");
@@ -395,9 +397,52 @@ export function getWorktreeSuffix(projectDir = process.cwd()): string {
   return suffix;
 }
 
+/** Non-blocking native-plugin path; sync callers retain their existing API. */
+export async function getWorktreeSuffixAsync(projectDir = process.cwd()): Promise<string> {
+  const envSuffix = process.env.CONTEXT_MODE_SESSION_SUFFIX;
+  if (envSuffix !== undefined) return envSuffix ? `__${envSuffix}` : "";
+  if (_wtCache?.projectDir === projectDir && _wtCache.envSuffix === envSuffix) return _wtCache.suffix;
+  const pending = pendingWorktreeSuffixes.get(projectDir);
+  if (pending) return pending;
+  const git = (args: string[]): Promise<string> => new Promise((resolve, reject) => {
+    execFile("git", ["-C", projectDir, ...args], {
+      encoding: "utf8", timeout: 2000, windowsHide: true,
+    }, (error, stdout) => error ? reject(error) : resolve(stdout.trim()));
+  });
+  const canonicalize = async (root: string) => {
+    let resolved = root;
+    try { resolved = await realpath(root); } catch { /* same missing-path fallback as sync API */ }
+    const normalized = normalizeWorktreePath(resolved);
+    return process.platform === "win32" || process.platform === "darwin"
+      ? normalized.toLowerCase() : normalized;
+  };
+  const result = (async () => {
+    let suffix = "";
+    try {
+      const [current, listing] = await Promise.all([
+        git(["rev-parse", "--show-toplevel"]), git(["worktree", "list", "--porcelain"]),
+      ]);
+      const main = listing.split(/\r?\n/).find(line => line.startsWith("worktree "))?.slice(9).trim();
+      if (current && main) {
+        const [canonicalCurrent, canonicalMain] = await Promise.all([
+          canonicalize(current), canonicalize(main),
+        ]);
+        if (canonicalCurrent !== canonicalMain) {
+          suffix = `__${createHash("sha256").update(canonicalCurrent).digest("hex").slice(0, 8)}`;
+        }
+      }
+    } catch { /* git unavailable / not a repository — same no-suffix fallback */ }
+    _wtCache = { projectDir, envSuffix, suffix };
+    return suffix;
+  })();
+  pendingWorktreeSuffixes.set(projectDir, result);
+  try { return await result; } finally { pendingWorktreeSuffixes.delete(projectDir); }
+}
+
 // Test-only helper: clear the memoization between cases.
 export function _resetWorktreeSuffixCacheForTests(): void {
   _wtCache = undefined;
+  pendingWorktreeSuffixes.clear();
 }
 
 // ─────────────────────────────────────────────────────────
@@ -504,6 +549,15 @@ export function resolveSessionDbPath(opts: {
   sessionsDir: string;
 }): string {
   return resolveSessionPath({ ...opts, ext: ".db" });
+}
+
+export async function resolveSessionDbPathAsync(opts: {
+  projectDir: string;
+  sessionsDir: string;
+}): Promise<string> {
+  const suffix = await getWorktreeSuffixAsync(opts.projectDir);
+  // Explicit suffix (including "") bypasses sync git without changing migration.
+  return resolveSessionPath({ ...opts, suffix, ext: ".db" });
 }
 
 /**
