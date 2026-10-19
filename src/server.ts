@@ -26,7 +26,7 @@ import {
   evaluateProjectContainment,
 } from "./security.js";
 import {
-  detectRuntimes,
+  detectRuntimesAsync,
   getRuntimeSummary,
   getAvailableLanguages,
   hasBunRuntime,
@@ -139,8 +139,6 @@ if (process.env.CONTEXT_MODE_EMBEDDED_PLUGIN_TOOLS !== "1") {
   });
 }
 
-const runtimes = detectRuntimes();
-const available = getAvailableLanguages(runtimes);
 export const server = new McpServer({
   name: "context-mode",
   version: VERSION,
@@ -413,10 +411,15 @@ export function installStrictClientSchemaCompat(target: McpServer = server): voi
   }
 }
 
-const executor = new PolyglotExecutor({
-  runtimes,
-  projectRoot: () => getProjectDir(),
-});
+let executor: PolyglotExecutor | undefined;
+let executorPromise: Promise<PolyglotExecutor> | undefined;
+function getExecutor(): Promise<PolyglotExecutor> {
+  return executorPromise ??= detectRuntimesAsync().then(runtimes => {
+    // Always pass the map: the constructor's compatibility default is synchronous.
+    executor = new PolyglotExecutor({ runtimes, projectRoot: () => getProjectDir() });
+    return executor;
+  }).catch(error => { executorPromise = undefined; throw error; });
+}
 
 // ─────────────────────────────────────────────────────────
 // FS read tracking preload for ctx_batch_execute
@@ -1230,11 +1233,8 @@ function checkFilePathDenyPolicy(
   return null;
 }
 
-// Build description dynamically based on detected runtimes
-const langList = available.join(", ");
-const bunNote = hasBunRuntime()
-  ? " (Bun detected — JS/TS runs 3-5x faster)"
-  : "";
+// Listing tools must not launch runtime probes. Availability is checked on use.
+const langList = "javascript, typescript, python, shell, ruby, go, rust, php, perl, r, elixir, csharp";
 
 // ─────────────────────────────────────────────────────────
 // Helper: smart snippet extraction — returns windows around
@@ -1647,7 +1647,7 @@ server.registerTool(
       idempotentHint: false,
       openWorldHint: true,
     },
-    description: `Run code in a sandboxed subprocess.${bunNote} Languages: ${langList}.
+    description: `Run code in a sandboxed subprocess. Languages (when installed): ${langList}.
 
 Think-in-Code — the core philosophy: the bytes your code processes never enter your conversation memory; only what you console.log() does. Reading a 700 KB log directly means 700 KB of your remaining reasoning capacity gets spent on raw bytes. Running code over that same log in this sandbox and printing a 3 KB summary leaves you with 697 KB of capacity for the actual work.
 
@@ -1809,7 +1809,7 @@ __cm_main().catch(e=>{console.error(e);process.exitCode=1});${background ? '\nse
 })(typeof require!=='undefined'?require:null);`;
       }
       const effTimeout = resolveExecTimeout(timeout);
-      const result = await executor.execute({ language, code: instrumentedCode, timeout: effTimeout, background, cwd });
+      const result = await (await getExecutor()).execute({ language, code: instrumentedCode, timeout: effTimeout, background, cwd });
 
       // Echo the executed source code before stdout so users can audit
       // and tooling can block command patterns (Issues #717 + #736).
@@ -2123,7 +2123,7 @@ EXAMPLE: ctx_execute_file(path: "data.csv", language: "javascript", code: "const
 
     try {
       const effTimeout = resolveExecTimeout(timeout);
-      const result = await executor.executeFile({
+      const result = await (await getExecutor()).executeFile({
         path,
         language,
         code,
@@ -3606,7 +3606,7 @@ async function fetchOneUrl(url: string, source: string | undefined, force: boole
   const outputPath = join(tmpdir(), `ctx-fetch-${Date.now()}-${Math.random().toString(36).slice(2)}.dat`);
   try {
     const fetchCode = buildFetchCode(url, outputPath);
-    const result = await executor.execute({
+    const result = await (await getExecutor()).execute({
       language: "javascript",
       code: fetchCode,
       timeout: 30_000,
@@ -4258,6 +4258,8 @@ EXAMPLE: ctx_batch_execute(
       // Inject NODE_OPTIONS for FS read tracking in spawned Node processes.
       // The executor denies NODE_OPTIONS in its env (security), so we set it
       // as an inline shell prefix. This only affects child `node` invocations.
+      const runtimes = await detectRuntimesAsync();
+      const executor = await getExecutor();
       const nodeOptsPrefix = buildBatchNodeOptionsPrefix(runtimes.shell, CM_FS_PRELOAD);
 
       // Full stdout is preserved per-command and indexed into FTS5 (Issue #61, #197).
@@ -4638,6 +4640,8 @@ server.registerTool(
 
     // Runtimes
     const total = 11;
+    const runtimes = await detectRuntimesAsync();
+    const available = getAvailableLanguages(runtimes);
     const pct = ((available.length / total) * 100).toFixed(0);
     lines.push(`[OK] Runtimes: ${available.length}/${total} (${pct}%) — ${available.join(", ")}`);
 
@@ -4765,6 +4769,7 @@ server.registerTool(
       const signal = detectPlatform(clientInfo ?? undefined);
       platformId = signal.platform;
       platformFlag = ` --platform ${signal.platform}`;
+      const runtimes = await detectRuntimesAsync();
       nodeOpts = isInProcessPluginPlatform(signal.platform) && runtimes.javascript
         ? { platform: signal.platform, jsRuntime: runtimes.javascript }
         : undefined;
@@ -5327,7 +5332,7 @@ async function main() {
 
   // Clean up own DB + backgrounded processes + preload script on shutdown
   const shutdown = () => {
-    executor.cleanupBackgrounded();
+    executor?.cleanupBackgrounded();
     if (_store) _store.close(); // persist DB for --continue sessions
     try { unlinkSync(CM_FS_PRELOAD); } catch { /* best effort */ }
     // Remove MCP readiness sentinel (#230)
@@ -5430,7 +5435,7 @@ async function main() {
 
   if (process.stdin.isTTY) {
     console.error(`Context Mode MCP server v${VERSION} running on stdio`);
-    console.error(`Detected runtimes:\n${getRuntimeSummary(runtimes)}`);
+    console.error(`Detected runtimes:\n${getRuntimeSummary(await detectRuntimesAsync())}`);
     if (!hasBunRuntime()) {
       console.error(
         "\nPerformance tip: Install Bun for 3-5x faster JS/TS execution",
