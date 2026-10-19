@@ -1,5 +1,6 @@
-import { execFileSync, execSync } from "node:child_process";
+import { execFile, execFileSync, execSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { JS_RUNTIMES } from "./adapters/types.js";
 
 /**
@@ -151,11 +152,11 @@ function bunCommand(): string {
 }
 
 /** Fallback paths where Bun may be installed but not on PATH. */
-function bunFallbackPaths(): string[] {
-  const home = process.env.HOME ?? process.env.USERPROFILE ?? "";
+function bunFallbackPaths(env: NodeJS.ProcessEnv = process.env): string[] {
+  const home = env.HOME ?? env.USERPROFILE ?? "";
   if (isWindows) {
-    const localAppData = process.env.LOCALAPPDATA ?? "";
-    const appData = process.env.APPDATA ?? "";
+    const localAppData = env.LOCALAPPDATA ?? "";
+    const appData = env.APPDATA ?? "";
     return [
       // Native bun installer locations (irm bun.sh/install.ps1).
       ...(home ? [`${home}\\.bun\\bin\\bun.exe`] : []),
@@ -393,6 +394,114 @@ export function detectRuntimes(): RuntimeMap {
 
 export function hasBunRuntime(): boolean {
   return bunExists();
+}
+
+// Native hosts may evaluate a fresh copy of this module per folder. Store both
+// in-flight and completed discovery on the process, not in a module variable.
+const RUNTIME_CACHE = Symbol.for("context-mode.runtime-discovery.v1");
+type RuntimeCache = Map<string, Promise<RuntimeMap>>;
+const runtimeProcess = process as typeof process & { [RUNTIME_CACHE]?: RuntimeCache };
+
+async function pathExists(path: string): Promise<boolean> {
+  try { await access(path); return true; } catch { return false; }
+}
+
+/** Async counterpart of detectRuntimes; legacy synchronous callers stay intact. */
+export async function detectRuntimesAsync(): Promise<RuntimeMap> {
+  const env = { ...process.env };
+  const cwd = process.cwd();
+  const execPath = process.execPath;
+  // Recheck liveness even on a cache hit: version-manager cleanup can remove
+  // process.execPath while this process is still alive (#800).
+  const liveExecPath = await pathExists(execPath);
+  const discoveryKeys = new Set([
+    "PATH", "PATHEXT", "SHELL", "HOME", "USERPROFILE", "LOCALAPPDATA",
+    "APPDATA", "COMSPEC", "SYSTEMROOT", "WINDIR", "BUN_INSTALL",
+  ]);
+  const key = JSON.stringify([process.platform, cwd, execPath, liveExecPath,
+    Object.entries(env).filter(([k]) => discoveryKeys.has(k.toUpperCase()))
+      .sort(([a], [b]) => a.localeCompare(b))]);
+  const cache = runtimeProcess[RUNTIME_CACHE] ??= new Map();
+  let pending = cache.get(key);
+  if (!pending) {
+    pending = discoverRuntimesAsync(env, cwd, execPath, liveExecPath);
+    cache.set(key, pending);
+    // Bound env churn in long-lived hosts; never retain a rejected discovery.
+    if (cache.size > 32) cache.delete(cache.keys().next().value!);
+    void pending.catch(() => { if (cache.get(key) === pending) cache.delete(key); });
+  }
+  return pending;
+}
+
+async function discoverRuntimesAsync(
+  env: NodeJS.ProcessEnv, cwd: string, execPath: string, liveExecPath: boolean,
+): Promise<RuntimeMap> {
+  const win = process.platform === "win32";
+  const run = (cmd: string, args: string[], timeout = 5000): Promise<string> =>
+    new Promise((resolve, reject) => {
+      execFile(cmd, args, { env, cwd, encoding: "utf8", timeout, windowsHide: true },
+        (error, stdout) => error ? reject(error) : resolve(stdout.trim()));
+    });
+  const locations = new Map<string, Promise<string[]>>();
+  const locate = (cmd: string): Promise<string[]> => {
+    let result = locations.get(cmd);
+    if (!result) {
+      result = (win ? run("where.exe", [cmd]) : run("/bin/sh", ["-c", `command -v ${cmd}`]))
+        .then(out => out.split(/\r?\n/).map(p => p.trim()).filter(Boolean), () => []);
+      locations.set(cmd, result);
+    }
+    return result;
+  };
+  const exists = async (cmd: string) => (await locate(cmd)).length > 0;
+  const first = async (commands: string[]) => {
+    for (const cmd of commands) if (await exists(cmd)) return cmd;
+    return null;
+  };
+  const python = async () => {
+    for (const cmd of ["python3", "python", "py"]) {
+      const hits = (await locate(cmd)).filter(p => !win || !/\\Microsoft\\WindowsApps\\/i.test(p));
+      if (!hits.length) continue;
+      try {
+        // Probe the real hit, never launch a Store stub ahead of it on PATH.
+        await run(win ? hits[0] : cmd, ["--version"], win ? 5000 : 1500);
+        return cmd;
+      } catch { /* not runnable — try the next Python launcher */ }
+    }
+    return null;
+  };
+  const resolveBun = async () => {
+    const onPath = await exists("bun");
+    for (const path of bunFallbackPaths(env)) if (await pathExists(path)) return path;
+    return onPath ? "bun" : null;
+  };
+  const shell = async () => {
+    let bash: string | null = null;
+    if (win) {
+      for (const path of await locate("bash")) {
+        if (isWindowsWslBash(path) || /system32|windowsapps/i.test(path)) continue;
+        bash = path;
+        for (const known of KNOWN_GIT_BASH_PATHS) {
+          if (await pathExists(known)) { bash = known; break; }
+        }
+        break;
+      }
+    }
+    const user = env.SHELL;
+    if (user && isAllowlistedShell(user) && await pathExists(user) &&
+        !(win && isWindowsWslBash(user)) && !(win && bash && isWindowsSystemCmd(user))) return user;
+    return win ? bash ?? await first(["sh", "pwsh", "powershell"]) ?? "cmd.exe"
+      : await exists("bash") ? "bash" : "sh";
+  };
+  const [bun, pythonRuntime, shellRuntime, ruby, go, rust, php, perl, r, elixir, csharp] =
+    await Promise.all([resolveBun(), python(), shell(), first(["ruby"]), first(["go"]),
+      first(["rustc"]), first(["php"]), first(["perl"]), first(["Rscript", "r"]),
+      first(["elixir"]), first(["dotnet-script"])]);
+  const base = runtimeBasename(execPath).replace(/\.exe$/i, "");
+  return {
+    javascript: bun ?? (JS_RUNTIMES.has(base) && liveExecPath ? execPath : await first(["node"])),
+    typescript: bun ?? await first(["tsx", "ts-node"]),
+    python: pythonRuntime, shell: shellRuntime, ruby, go, rust, php, perl, r, elixir, csharp,
+  };
 }
 
 /**
